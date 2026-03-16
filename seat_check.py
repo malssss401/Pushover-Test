@@ -1,8 +1,8 @@
-import requests
-from bs4 import BeautifulSoup
 import os
+from playwright.sync_api import sync_playwright
+import requests
 
-URL = "https://www.icaionlineregistration.org/launchbatchdetail.aspx"
+# Credentials
 USER_KEY = os.environ.get("PUSHOVER_USER")
 API_TOKEN = os.environ.get("PUSHOVER_TOKEN")
 
@@ -12,86 +12,56 @@ def send_push(message):
     })
 
 def run_test():
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    })
+    with sync_playwright() as p:
+        # Launch browser
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        page = context.new_page()
 
-    try:
-        # 1. Fetch initial page
-        res = session.get(URL)
-        soup = BeautifulSoup(res.text, "html.parser")
+        try:
+            print("Navigating to ICAI...")
+            page.goto("https://www.icaionlineregistration.org/launchbatchdetail.aspx", wait_until="networkidle")
 
-        # Robust way to find the ASP.NET hidden fields
-        def get_hidden_fields(s):
-            fields = {}
-            for field_id in ["__VIEWSTATE", "__VIEWSTATEGENERATOR", "__EVENTVALIDATION"]:
-                tag = s.find("input", {"id": field_id})
-                if tag:
-                    fields[field_id] = tag.get("value")
-            return fields
+            # 1. Select Region
+            print("Selecting Region...")
+            page.select_option("select[id*='ddlRegion']", label="Southern")
+            page.wait_for_load_state("networkidle") # Wait for City list to refresh
 
-        # Find the full names of the dropdowns and button
-        # ASP.NET names often look like 'ctl00$ContentPlaceHolder1$ddlRegion'
-        def find_name_by_partial_id(s, partial_id):
-            tag = s.find(lambda t: t.has_attr('id') and partial_id in t['id'])
-            return tag.get('name') if tag else None
+            # 2. Select POU (City)
+            print("Selecting City...")
+            page.select_option("select[id*='ddlPOU']", label="Alappuzha")
+            
+            # 3. Select Course
+            print("Selecting Course...")
+            page.select_option("select[id*='ddlCourse']", label="AICITSS - Advanced Information Technology")
 
-        r_name = find_name_by_partial_id(soup, "ddlRegion")
-        p_name = find_name_by_partial_id(soup, "ddlPOU")
-        c_name = find_name_by_partial_id(soup, "ddlCourse")
-        b_name = find_name_by_partial_id(soup, "btnSearch")
+            # 4. Click Search
+            print("Clicking Search...")
+            page.click("input[id*='btnSearch']")
+            page.wait_for_load_state("networkidle")
 
-        if not r_name:
-            # Fallback: Print what we see for debugging
-            print(f"DEBUG: Found tags: {[t.get('id') for t in soup.find_all(id=True)][:10]}")
-            raise Exception("Website layout changed or blocking bots. No IDs found.")
-
-        # 2. Trigger the "Postback" for Region
-        data = get_hidden_fields(soup)
-        data.update({
-            "__EVENTTARGET": r_name,
-            r_name: "Southern"
-        })
-        res = session.post(URL, data=data)
-        soup = BeautifulSoup(res.text, "html.parser")
-
-        # 3. Final Search
-        data = get_hidden_fields(soup)
-        data.update({
-            r_name: "Southern",
-            p_name: "Alappuzha",
-            c_name: "AICITSS - Advanced Information Technology",
-            b_name: "Get List"
-        })
-        res = session.post(URL, data=data)
-        soup = BeautifulSoup(res.text, "html.parser")
-
-        # 4. Parse Table
-        total_seats = 0
-        table = soup.find("table") # Get the first table found
-        
-        if table:
-            rows = table.find_all("tr")
+            # 5. Parse the table
+            print("Parsing results...")
+            rows = page.query_selector_all("tr")
+            total_seats = 0
+            
             for row in rows:
-                cols = row.find_all("td")
+                cols = row.query_selector_all("td")
                 if len(cols) >= 2:
-                    # Look for any digit in the second column
-                    text = cols[1].get_text(strip=True)
+                    text = cols[1].inner_text().strip()
                     if text.isdigit():
                         total_seats += int(text)
 
-        if total_seats > 0:
-            send_push(f"✅ Seats Found! Total: {total_seats}")
-        else:
-            # If search worked but 0 seats, the HTML will contain 'Alappuzha'
-            if "Alappuzha" in res.text:
-                send_push("🔍 Connection Success: Search worked, but 0 seats found.")
+            if total_seats > 0:
+                send_push(f"✅ Playwright Success! Found {total_seats} seats in Alappuzha.")
             else:
-                send_push("⚠️ Connection Success: But the search results didn't load.")
+                send_push("🔍 Playwright Success: 0 seats found (Search worked).")
 
-    except Exception as e:
-        send_push(f"❌ Error: {str(e)}")
+        except Exception as e:
+            print(f"Error: {e}")
+            send_push(f"❌ Playwright Error: {str(e)}")
+        finally:
+            browser.close()
 
 if __name__ == "__main__":
     run_test()
