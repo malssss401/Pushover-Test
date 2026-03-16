@@ -6,84 +6,81 @@ URL = "https://www.icaionlineregistration.org/launchbatchdetail.aspx"
 PUSHOVER_USER = os.environ.get("PUSHOVER_USER")
 PUSHOVER_TOKEN = os.environ.get("PUSHOVER_TOKEN")
 
-def get_tokens(soup):
+def get_asp_vars(soup):
+    """Extracts the hidden ASP.NET form variables."""
     return {
-        "__VIEWSTATE": soup.find("input", {"name": "__VIEWSTATE"})["value"] if soup.find("input", {"name": "__VIEWSTATE"}) else "",
-        "__VIEWSTATEGENERATOR": soup.find("input", {"name": "__VIEWSTATEGENERATOR"})["value"] if soup.find("input", {"name": "__VIEWSTATEGENERATOR"}) else "",
-        "__EVENTVALIDATION": soup.find("input", {"name": "__EVENTVALIDATION"})["value"] if soup.find("input", {"name": "__EVENTVALIDATION"}) else "",
+        "__VIEWSTATE": soup.find("input", {"id": "__VIEWSTATE"})["value"],
+        "__VIEWSTATEGENERATOR": soup.find("input", {"id": "__VIEWSTATEGENERATOR"})["value"],
+        "__EVENTVALIDATION": soup.find("input", {"id": "__EVENTVALIDATION"})["value"],
     }
 
 def run_test():
     session = requests.Session()
-    # Using a more standard browser header
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    })
+    session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
 
     try:
-        # STEP 1: Initial Page Load
-        r1 = session.get(URL)
-        soup = BeautifulSoup(r1.text, "html.parser")
+        # 1. Initial Load to get tokens
+        res = session.get(URL)
+        soup = BeautifulSoup(res.text, "html.parser")
         
-        # STEP 2: Select Region & POU
-        # We combine these to try and force the server to recognize the selection
-        data = get_tokens(soup)
+        # 2. Select Region (Crucial: This triggers the City list to load)
+        data = get_asp_vars(soup)
+        data.update({"ddlRegion": "Southern", "__EVENTTARGET": "ddlRegion"})
+        res = session.post(URL, data=data)
+        soup = BeautifulSoup(res.text, "html.parser")
+
+        # 3. Select City and Search
+        data = get_asp_vars(soup)
         data.update({
             "ddlRegion": "Southern",
             "ddlPOU": "Alappuzha",
             "ddlCourse": "AICITSS - Advanced Information Technology",
             "btnSearch": "Get List"
         })
+        res = session.post(URL, data=data)
+        soup = BeautifulSoup(res.text, "html.parser")
 
-        r2 = session.post(URL, data=data)
-        soup = BeautifulSoup(r2.text, "html.parser")
-
-        # STEP 3: Robust Parsing
-        # We look for the GridView table specifically
-        total_seats = 0
-        found_batches = []
+        # --- COPY DATA TO ARRAY ---
+        # We find the table (usually has 'gv' or 'GridView' in ID)
+        table = soup.find("table")
+        web_data_array = []
         
-        # Look for all table rows
-        rows = soup.find_all("tr")
-        print(f"Total table rows found: {len(rows)}")
+        if table:
+            for row in table.find_all("tr"):
+                # Copy each cell's text into a sub-array
+                cells = [td.get_text(strip=True) for td in row.find_all(["td", "th"])]
+                if cells:
+                    web_data_array.append(cells)
 
-        for row in rows:
-            cells = row.find_all(["td", "th"])
-            cell_texts = [c.get_text(strip=True) for c in cells]
-            
-            # Debug: Print rows that look like data
-            if len(cell_texts) > 1:
-                # Check every cell in the row for a number
-                for i, text in enumerate(cell_texts):
-                    if text.isdigit():
-                        num = int(text)
-                        # In your screenshot, seats were in the 2nd column
-                        # We'll count it if it's a reasonable seat number (e.g., < 500)
-                        if 0 < num < 500: 
-                            total_seats += num
-                            found_batches.append(f"Row: {' | '.join(cell_texts)}")
-                            break # Move to next row once a seat count is found
+        # --- PARSE THE ARRAY ---
+        total_seats = 0
+        batch_info = []
 
-        # STEP 4: Final Action
-        result_msg = ""
+        # Start from index 1 to skip header
+        for row in web_data_array[1:]:
+            # In your screenshot, Available Seats is column 2 (index 1)
+            if len(row) >= 2:
+                batch_name = row[0]
+                seats_str = row[1]
+                
+                if seats_str.isdigit():
+                    count = int(seats_str)
+                    total_seats += count
+                    if count > 0:
+                        batch_info.append(f"{batch_name}: {count}")
+
+        # Final Notification
         if total_seats > 0:
-            result_msg = f"✅ SUCCESS! Found {total_seats} seats.\nDetails:\n" + "\n".join(found_batches[:3])
+            msg = f"✅ SUCCESS: {total_seats} seats found!\n" + "\n".join(batch_info)
         else:
-            # If 0 seats, let's see what the page actually says
-            if "No Record Found" in soup.text:
-                result_msg = "🔍 Search worked, but the site literally says 'No Record Found'."
-            else:
-                result_msg = "❓ 0 seats found, but no error. The table might be empty."
+            msg = "🔍 Check complete: 0 seats found. (The table was copied but no numbers found)."
 
-        print(result_msg)
         requests.post("https://api.pushover.net/1/messages.json", 
-                      data={"token": PUSHOVER_TOKEN, "user": PUSHOVER_USER, "message": result_msg})
+                      data={"token": PUSHOVER_TOKEN, "user": PUSHOVER_USER, "message": msg})
+        print(msg)
 
     except Exception as e:
-        err = f"❌ Error: {str(e)}"
-        print(err)
-        requests.post("https://api.pushover.net/1/messages.json", 
-                      data={"token": PUSHOVER_TOKEN, "user": PUSHOVER_USER, "message": err})
+        print(f"Error: {e}")
 
 if __name__ == "__main__":
     run_test()
