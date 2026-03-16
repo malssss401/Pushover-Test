@@ -1,0 +1,32 @@
+name: ICAI Seat Monitor
+
+on:
+  schedule:
+    # Runs at the start of every hour
+    - cron: "0 * * * *"
+  workflow_dispatch: # Manual trigger
+
+jobs:
+  check-seats:
+    runs-on: ubuntu-latest
+    # Added a timeout so the job doesn't hang forever
+    timeout-minutes: 60 
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          pip install requests beautifulsoup4
+
+      - name: Run seat checker
+        env:
+          PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
+          PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
+        run: python seat_check.py
