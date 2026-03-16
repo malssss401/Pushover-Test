@@ -1,14 +1,13 @@
-name: ICAI Seat Monitor
+name: One-Time Manual Test
 
 on:
-  workflow_dispatch: # Manual trigger
+  workflow_dispatch: # This adds the manual "Run workflow" button
 
 jobs:
-  check-seats:
+  test-check:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -17,10 +16,9 @@ jobs:
           python-version: "3.10"
 
       - name: Install dependencies
-        run: |
-          pip install requests beautifulsoup4
+        run: pip install requests beautifulsoup4
 
-      - name: Run seat checker
+      - name: Run Test Script
         env:
           PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
           PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
