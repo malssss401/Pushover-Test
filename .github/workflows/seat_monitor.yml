@@ -1,16 +1,11 @@
 name: ICAI Seat Monitor
 
 on:
-  schedule:
-    # Runs at the start of every hour
-    - cron: "0 * * * *"
   workflow_dispatch: # Manual trigger
 
 jobs:
   check-seats:
     runs-on: ubuntu-latest
-    # Added a timeout so the job doesn't hang forever
-    timeout-minutes: 60 
 
     steps:
       - name: Checkout repository
