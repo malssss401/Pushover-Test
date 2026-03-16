@@ -13,69 +13,82 @@ def send_push(message):
 
 def run_test():
     session = requests.Session()
-    session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    })
 
     try:
-        # 1. Get Initial Page
+        # 1. Fetch initial page
         res = session.get(URL)
         soup = BeautifulSoup(res.text, "html.parser")
 
-        # Function to find the exact name attribute for dropdowns
-        def find_name(id_part):
-            tag = soup.find(lambda t: t.name in ['select', 'input'] and id_part in t.get('id', ''))
+        # Robust way to find the ASP.NET hidden fields
+        def get_hidden_fields(s):
+            fields = {}
+            for field_id in ["__VIEWSTATE", "__VIEWSTATEGENERATOR", "__EVENTVALIDATION"]:
+                tag = s.find("input", {"id": field_id})
+                if tag:
+                    fields[field_id] = tag.get("value")
+            return fields
+
+        # Find the full names of the dropdowns and button
+        # ASP.NET names often look like 'ctl00$ContentPlaceHolder1$ddlRegion'
+        def find_name_by_partial_id(s, partial_id):
+            tag = s.find(lambda t: t.has_attr('id') and partial_id in t['id'])
             return tag.get('name') if tag else None
 
-        # Dynamically find the full ASP.NET names
-        region_name = find_name("ddlRegion")
-        pou_name = find_name("ddlPOU")
-        course_name = find_name("ddlCourse")
-        button_name = find_name("btnSearch")
+        r_name = find_name_by_partial_id(soup, "ddlRegion")
+        p_name = find_name_by_partial_id(soup, "ddlPOU")
+        c_name = find_name_by_partial_id(soup, "ddlCourse")
+        b_name = find_name_by_partial_id(soup, "btnSearch")
 
-        if not all([region_name, pou_name, course_name]):
-            raise Exception("Could not find form control IDs on the page.")
+        if not r_name:
+            # Fallback: Print what we see for debugging
+            print(f"DEBUG: Found tags: {[t.get('id') for t in soup.find_all(id=True)][:10]}")
+            raise Exception("Website layout changed or blocking bots. No IDs found.")
 
-        # 2. First Postback (Select Region)
-        data = {
-            "__VIEWSTATE": soup.find("input", {"id": "__VIEWSTATE"})["value"],
-            "__VIEWSTATEGENERATOR": soup.find("input", {"id": "__VIEWSTATEGENERATOR"})["value"],
-            "__EVENTVALIDATION": soup.find("input", {"id": "__EVENTVALIDATION"})["value"],
-            "__EVENTTARGET": region_name,
-            region_name: "Southern"
-        }
+        # 2. Trigger the "Postback" for Region
+        data = get_hidden_fields(soup)
+        data.update({
+            "__EVENTTARGET": r_name,
+            r_name: "Southern"
+        })
         res = session.post(URL, data=data)
         soup = BeautifulSoup(res.text, "html.parser")
 
-        # 3. Final Search (Select City & Course)
-        data = {
-            "__VIEWSTATE": soup.find("input", {"id": "__VIEWSTATE"})["value"],
-            "__VIEWSTATEGENERATOR": soup.find("input", {"id": "__VIEWSTATEGENERATOR"})["value"],
-            "__EVENTVALIDATION": soup.find("input", {"id": "__EVENTVALIDATION"})["value"],
-            region_name: "Southern",
-            pou_name: "Alappuzha",
-            course_name: "AICITSS - Advanced Information Technology",
-            button_name: "Get List"
-        }
+        # 3. Final Search
+        data = get_hidden_fields(soup)
+        data.update({
+            r_name: "Southern",
+            p_name: "Alappuzha",
+            c_name: "AICITSS - Advanced Information Technology",
+            b_name: "Get List"
+        })
         res = session.post(URL, data=data)
         soup = BeautifulSoup(res.text, "html.parser")
 
-        # 4. Parse Results
+        # 4. Parse Table
         total_seats = 0
-        # Check for any table with 'gv' or 'GridView' in the ID
-        table = soup.find("table", id=lambda x: x and 'gv' in x)
+        table = soup.find("table") # Get the first table found
         
         if table:
-            for row in table.find_all("tr")[1:]: # Skip header
+            rows = table.find_all("tr")
+            for row in rows:
                 cols = row.find_all("td")
-                if len(cols) >= 2 and cols[1].get_text(strip=True).isdigit():
-                    total_seats += int(cols[1].get_text(strip=True))
+                if len(cols) >= 2:
+                    # Look for any digit in the second column
+                    text = cols[1].get_text(strip=True)
+                    if text.isdigit():
+                        total_seats += int(text)
 
         if total_seats > 0:
-            send_push(f"✅ SUCCESS! {total_seats} seats found in Alappuzha.")
-        elif "No Record Found" in res.text:
-            send_push("🔍 Search worked: The site explicitly says 'No Record Found'.")
+            send_push(f"✅ Seats Found! Total: {total_seats}")
         else:
-            # If we reach here, search still didn't trigger
-            send_push("⚠️ Search failed to refresh. Server ignored the 'Get List' click.")
+            # If search worked but 0 seats, the HTML will contain 'Alappuzha'
+            if "Alappuzha" in res.text:
+                send_push("🔍 Connection Success: Search worked, but 0 seats found.")
+            else:
+                send_push("⚠️ Connection Success: But the search results didn't load.")
 
     except Exception as e:
         send_push(f"❌ Error: {str(e)}")
