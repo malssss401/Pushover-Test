@@ -8,64 +8,82 @@ PUSHOVER_TOKEN = os.environ.get("PUSHOVER_TOKEN")
 
 def get_tokens(soup):
     return {
-        "__VIEWSTATE": soup.find("input", {"name": "__VIEWSTATE"})["value"],
-        "__VIEWSTATEGENERATOR": soup.find("input", {"name": "__VIEWSTATEGENERATOR"})["value"],
-        "__EVENTVALIDATION": soup.find("input", {"name": "__EVENTVALIDATION"})["value"],
+        "__VIEWSTATE": soup.find("input", {"name": "__VIEWSTATE"})["value"] if soup.find("input", {"name": "__VIEWSTATE"}) else "",
+        "__VIEWSTATEGENERATOR": soup.find("input", {"name": "__VIEWSTATEGENERATOR"})["value"] if soup.find("input", {"name": "__VIEWSTATEGENERATOR"}) else "",
+        "__EVENTVALIDATION": soup.find("input", {"name": "__EVENTVALIDATION"})["value"] if soup.find("input", {"name": "__EVENTVALIDATION"}) else "",
     }
 
 def run_test():
     session = requests.Session()
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    # Using a more standard browser header
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    })
 
     try:
-        # STEP 1: Get initial page
-        resp1 = session.get(URL, headers=headers)
-        soup = BeautifulSoup(resp1.text, "html.parser")
-        tokens = get_tokens(soup)
-
-        # STEP 2: "Select" Region (This triggers the city list to load server-side)
-        payload1 = {
-            **tokens,
-            "ddlRegion": "Southern",
-            "__EVENTTARGET": "ddlRegion",  # Tells the server we clicked the Region dropdown
-        }
-        resp2 = session.post(URL, data=payload1, headers=headers)
-        soup = BeautifulSoup(resp2.text, "html.parser")
-        tokens = get_tokens(soup) # Update tokens for the next step
-
-        # STEP 3: Search for Batch
-        payload2 = {
-            **tokens,
+        # STEP 1: Initial Page Load
+        r1 = session.get(URL)
+        soup = BeautifulSoup(r1.text, "html.parser")
+        
+        # STEP 2: Select Region & POU
+        # We combine these to try and force the server to recognize the selection
+        data = get_tokens(soup)
+        data.update({
             "ddlRegion": "Southern",
             "ddlPOU": "Alappuzha",
             "ddlCourse": "AICITSS - Advanced Information Technology",
             "btnSearch": "Get List"
-        }
-        resp3 = session.post(URL, data=payload2, headers=headers)
-        soup = BeautifulSoup(resp3.text, "html.parser")
+        })
 
-        # STEP 4: Parse table
+        r2 = session.post(URL, data=data)
+        soup = BeautifulSoup(r2.text, "html.parser")
+
+        # STEP 3: Robust Parsing
+        # We look for the GridView table specifically
         total_seats = 0
-        rows = soup.find_all("tr")
-        for row in rows:
-            cols = row.find_all("td")
-            if len(cols) >= 2:
-                seat_text = cols[1].text.strip()
-                if seat_text.isdigit():
-                    total_seats += int(seat_text)
-
-        # Notification
-        if total_seats > 0:
-            msg = f"✅ SUCCESS: {total_seats} seats found in Alappuzha!"
-        else:
-            msg = "🔍 Connection works, but 0 seats detected. Is the city correct?"
+        found_batches = []
         
+        # Look for all table rows
+        rows = soup.find_all("tr")
+        print(f"Total table rows found: {len(rows)}")
+
+        for row in rows:
+            cells = row.find_all(["td", "th"])
+            cell_texts = [c.get_text(strip=True) for c in cells]
+            
+            # Debug: Print rows that look like data
+            if len(cell_texts) > 1:
+                # Check every cell in the row for a number
+                for i, text in enumerate(cell_texts):
+                    if text.isdigit():
+                        num = int(text)
+                        # In your screenshot, seats were in the 2nd column
+                        # We'll count it if it's a reasonable seat number (e.g., < 500)
+                        if 0 < num < 500: 
+                            total_seats += num
+                            found_batches.append(f"Row: {' | '.join(cell_texts)}")
+                            break # Move to next row once a seat count is found
+
+        # STEP 4: Final Action
+        result_msg = ""
+        if total_seats > 0:
+            result_msg = f"✅ SUCCESS! Found {total_seats} seats.\nDetails:\n" + "\n".join(found_batches[:3])
+        else:
+            # If 0 seats, let's see what the page actually says
+            if "No Record Found" in soup.text:
+                result_msg = "🔍 Search worked, but the site literally says 'No Record Found'."
+            else:
+                result_msg = "❓ 0 seats found, but no error. The table might be empty."
+
+        print(result_msg)
         requests.post("https://api.pushover.net/1/messages.json", 
-                      data={"token": PUSHOVER_TOKEN, "user": PUSHOVER_USER, "message": msg})
-        print(msg)
+                      data={"token": PUSHOVER_TOKEN, "user": PUSHOVER_USER, "message": result_msg})
 
     except Exception as e:
-        print(f"Error: {e}")
+        err = f"❌ Error: {str(e)}"
+        print(err)
+        requests.post("https://api.pushover.net/1/messages.json", 
+                      data={"token": PUSHOVER_TOKEN, "user": PUSHOVER_USER, "message": err})
 
 if __name__ == "__main__":
     run_test()
