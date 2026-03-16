@@ -6,78 +6,77 @@ URL = "https://www.icaionlineregistration.org/launchbatchdetail.aspx"
 PUSHOVER_USER = os.environ.get("PUSHOVER_USER")
 PUSHOVER_TOKEN = os.environ.get("PUSHOVER_TOKEN")
 
-def get_asp_vars(soup):
-    """Extracts the hidden ASP.NET form variables."""
+def get_asp_state(soup):
     return {
-        "__VIEWSTATE": soup.find("input", {"id": "__VIEWSTATE"})["value"],
-        "__VIEWSTATEGENERATOR": soup.find("input", {"id": "__VIEWSTATEGENERATOR"})["value"],
-        "__EVENTVALIDATION": soup.find("input", {"id": "__EVENTVALIDATION"})["value"],
+        "__VIEWSTATE": soup.find("input", {"name": "__VIEWSTATE"})["value"],
+        "__VIEWSTATEGENERATOR": soup.find("input", {"name": "__VIEWSTATEGENERATOR"})["value"],
+        "__EVENTVALIDATION": soup.find("input", {"name": "__EVENTVALIDATION"})["value"],
     }
 
 def run_test():
     session = requests.Session()
-    session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
+    # Masking as a real browser is vital for ICAI
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    })
 
     try:
-        # 1. Initial Load to get tokens
-        res = session.get(URL)
-        soup = BeautifulSoup(res.text, "html.parser")
+        # STEP 1: Initial load
+        r1 = session.get(URL)
+        soup = BeautifulSoup(r1.text, "html.parser")
         
-        # 2. Select Region (Crucial: This triggers the City list to load)
-        data = get_asp_vars(soup)
+        # STEP 2: Postback for Region (Triggers City List)
+        data = get_asp_state(soup)
         data.update({"ddlRegion": "Southern", "__EVENTTARGET": "ddlRegion"})
-        res = session.post(URL, data=data)
-        soup = BeautifulSoup(res.text, "html.parser")
-
-        # 3. Select City and Search
-        data = get_asp_vars(soup)
+        r2 = session.post(URL, data=data)
+        soup = BeautifulSoup(r2.text, "html.parser")
+        
+        # STEP 3: Search for Alappuzha
+        data = get_asp_state(soup)
         data.update({
             "ddlRegion": "Southern",
-            "ddlPOU": "Alappuzha",
+            "ddlPOU": "Alappuzha", 
             "ddlCourse": "AICITSS - Advanced Information Technology",
             "btnSearch": "Get List"
         })
-        res = session.post(URL, data=data)
-        soup = BeautifulSoup(res.text, "html.parser")
+        r3 = session.post(URL, data=data)
+        soup = BeautifulSoup(r3.text, "html.parser")
 
-        # --- COPY DATA TO ARRAY ---
-        # We find the table (usually has 'gv' or 'GridView' in ID)
-        table = soup.find("table")
-        web_data_array = []
-        
-        if table:
-            for row in table.find_all("tr"):
-                # Copy each cell's text into a sub-array
-                cells = [td.get_text(strip=True) for td in row.find_all(["td", "th"])]
-                if cells:
-                    web_data_array.append(cells)
+        # --- DATA CAPTURE ---
+        # Capture all rows into an array for processing
+        all_rows = []
+        for tr in soup.find_all("tr"):
+            cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
+            if cells:
+                all_rows.append(cells)
 
-        # --- PARSE THE ARRAY ---
         total_seats = 0
-        batch_info = []
+        batch_details = []
 
-        # Start from index 1 to skip header
-        for row in web_data_array[1:]:
-            # In your screenshot, Available Seats is column 2 (index 1)
+        # Iterate through our array
+        for row in all_rows:
+            # We look for rows that have seat data (usually column index 1)
             if len(row) >= 2:
-                batch_name = row[0]
-                seats_str = row[1]
-                
-                if seats_str.isdigit():
-                    count = int(seats_str)
+                potential_seats = row[1]
+                if potential_seats.isdigit():
+                    count = int(potential_seats)
                     total_seats += count
                     if count > 0:
-                        batch_info.append(f"{batch_name}: {count}")
+                        batch_details.append(f"Batch: {row[0]} -> {count} seats")
 
-        # Final Notification
+        # --- NOTIFICATION ---
         if total_seats > 0:
-            msg = f"✅ SUCCESS: {total_seats} seats found!\n" + "\n".join(batch_info)
+            final_msg = f"✅ Seats Detected!\nTotal: {total_seats}\n" + "\n".join(batch_details)
         else:
-            msg = "🔍 Check complete: 0 seats found. (The table was copied but no numbers found)."
+            # Check if the page is literally saying 'No Record'
+            if "No Record Found" in soup.text:
+                final_msg = "🔍 Search successful, but site reports 0 current batches."
+            else:
+                final_msg = "❓ 0 seats found. The server might have rejected the city selection."
 
+        print(final_msg)
         requests.post("https://api.pushover.net/1/messages.json", 
-                      data={"token": PUSHOVER_TOKEN, "user": PUSHOVER_USER, "message": msg})
-        print(msg)
+                      data={"token": PUSHOVER_TOKEN, "user": PUSHOVER_USER, "message": final_msg})
 
     except Exception as e:
         print(f"Error: {e}")
