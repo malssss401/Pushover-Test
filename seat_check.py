@@ -37,7 +37,7 @@ POU_LABEL  = "CHENNAI"  # e.g. "CHENNAI", "BENGALURU", "ALAPPUZHA", or None
 # Full course name exactly as shown in ICAI dropdown:
 #   "AICITSS - Advanced Information Technology"
 #   "Advanced (ICITSS) MCS Course"
-COURSE_NAME = "AICITSS - Advanced Information Technology"
+COURSE_NAME = "Advanced (ICITSS) MCS Course"
 # ══════════════════════════════════════════════════════════════════════════════
 
 
