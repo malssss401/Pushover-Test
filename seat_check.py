@@ -1,9 +1,12 @@
 """
 ICAI Seat Monitor — One-Time Test
 ===================================
-Fix: ASP.NET __doPostBack causes a FULL PAGE RELOAD (not a DOM update).
-     Replaced wait_for_function with wait_for_load_state("domcontentloaded").
-     Screenshots confirm page + dropdowns load fine on GitHub runners.
+Key insight: After region postback, the FIRST city in the list
+(Alappuzha) is automatically selected by the site. No POU click needed.
+For any other city, we explicitly select by label after postback.
+
+Set POU_LABEL = None to use the auto-selected city (Alappuzha).
+Set POU_LABEL = "Chennai" (or any city name) to override.
 """
 
 import os
@@ -13,29 +16,26 @@ import requests
 PUSHOVER_USER  = os.environ.get("PUSHOVER_USER", "")
 PUSHOVER_TOKEN = os.environ.get("PUSHOVER_TOKEN", "")
 
-# ── Config ─────────────────────────────────────────────────────────────────────
-URL         = "https://www.icaionlineregistration.org/launchbatchdetail.aspx"
-REGION_VAL  = "4"    # Southern
-POU_VAL     = "101"  # Alappuzha
-COURSE_VAL  = "48"   # AICITSS – Advanced IT (value from page source)
+URL = "https://www.icaionlineregistration.org/launchbatchdetail.aspx"
 
-# ── Stealth loader (handles all playwright-stealth API versions) ───────────────
+# ── Change these values to monitor a different city/course ────────────────────
+REGION_VAL = "4"          # Southern
+POU_LABEL  = None         # None = use auto-selected first city (Alappuzha)
+                          # e.g. "Chennai" to explicitly pick a different city
+COURSE_VAL = "48"         # AICITSS – Advanced IT
+# ─────────────────────────────────────────────────────────────────────────────
+
 def _load_stealth():
-    try:
-        from playwright_stealth import stealth_sync
-        if callable(stealth_sync):
-            return stealth_sync
-    except (ImportError, TypeError):
-        pass
-    try:
-        from playwright_stealth import stealth
-        if callable(stealth):
-            return stealth
-    except (ImportError, TypeError):
-        pass
+    for name in ("stealth_sync", "stealth"):
+        try:
+            import playwright_stealth as _m
+            fn = getattr(_m, name, None)
+            if callable(fn):
+                return fn
+        except ImportError:
+            pass
     return None
 
-# ── Pushover ───────────────────────────────────────────────────────────────────
 def send_push(message: str, title: str = "ICAI Test") -> None:
     if not PUSHOVER_USER or not PUSHOVER_TOKEN:
         print("⚠️  Pushover secrets missing.")
@@ -56,14 +56,13 @@ def screenshot(page, path: str) -> None:
         page.screenshot(path=path, full_page=True)
         print(f"📸  {path}")
     except Exception as e:
-        print(f"Screenshot failed: {e}")
+        print(f"Screenshot error: {e}")
 
-# ── Main ───────────────────────────────────────────────────────────────────────
 def main():
     from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
     stealth_fn = _load_stealth()
-    print("🕵️  Stealth active." if stealth_fn else "⚠️  No stealth (continuing anyway).")
+    print("🕵️  Stealth active." if stealth_fn else "⚠️  No stealth.")
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
@@ -83,8 +82,6 @@ def main():
             viewport={"width": 1280, "height": 800},
         )
         page = context.new_page()
-
-        # Block heavy assets — speeds up government server
         page.route(
             "**/*.{png,jpg,jpeg,gif,svg,ico,woff,woff2,ttf,otf,css}",
             lambda route: route.abort(),
@@ -93,40 +90,66 @@ def main():
             stealth_fn(page)
 
         try:
-            # ── 1. Load page ───────────────────────────────────────────────
-            print("\n[1/5] Loading page …")
+            # ── 1. Load ────────────────────────────────────────────────────
+            print("\n[1/4] Loading page …")
             page.goto(URL, wait_until="domcontentloaded", timeout=60_000)
             screenshot(page, "debug_screenshot.png")
 
-            # ── 2. Select Region → triggers ASP.NET __doPostBack (full reload)
-            print(f"[2/5] Selecting Region ({REGION_VAL}) …")
+            # ── 2. Select Region → __doPostBack → full page reload ─────────
+            print(f"[2/4] Selecting Region (value={REGION_VAL}) …")
             page.wait_for_selector("select[id*='reg']", state="visible", timeout=15_000)
             page.select_option("select[id*='reg']", value=REGION_VAL)
-
-            # KEY FIX: __doPostBack reloads the entire page.
-            # wait_for_load_state waits for that reload to complete.
-            # Do NOT use wait_for_function — the DOM is replaced, not updated.
-            print("   ↳ Waiting for page reload (postback) …")
             page.wait_for_load_state("domcontentloaded", timeout=30_000)
+            time.sleep(2)   # Let postback finish writing option tags
 
-            # ── 3. Select POU and Course (POU list is now populated) ───────
-            print(f"[3/5] Selecting POU ({POU_VAL}) …")
-            page.wait_for_selector(
-                f"select[id*='POU'] option[value='{POU_VAL}']",
-                state="attached", timeout=15_000
+            # ── 3. POU selection (conditional) ────────────────────────────
+            if POU_LABEL is None:
+                # Alappuzha (or whichever city) is already auto-selected
+                # Just log what the site chose
+                auto = page.eval_on_selector(
+                    "select[id*='POU'], select[id*='pou'], select[id*='Pou']",
+                    "el => el.options[el.selectedIndex] ? el.options[el.selectedIndex].text : 'unknown'"
+                )
+                print(f"[3/4] POU auto-selected by site: '{auto}' — no override needed.")
+            else:
+                # Explicitly pick a different city by its visible label
+                print(f"[3/4] Selecting POU label='{POU_LABEL}' …")
+                pou_sel = "select[id*='POU'], select[id*='pou'], select[id*='Pou']"
+
+                # Log all available cities so we can verify
+                options = page.eval_on_selector(
+                    pou_sel,
+                    "el => Array.from(el.options).map(o => o.value + ' = ' + o.text)"
+                )
+                print(f"   Available POU options: {options}")
+
+                page.select_option(pou_sel, label=POU_LABEL)
+
+            # ── 4. Select Course ───────────────────────────────────────────
+            course_sel = "select[id*='Course'], select[id*='course']"
+
+            # Log available courses — useful to verify COURSE_VAL is correct
+            course_options = page.eval_on_selector(
+                course_sel,
+                "el => Array.from(el.options).map(o => o.value + ' = ' + o.text)"
             )
-            page.select_option("select[id*='POU']",    value=POU_VAL)
-            page.select_option("select[id*='Course']", value=COURSE_VAL)
+            print(f"   Available Course options: {course_options}")
 
-            # ── 4. Click Get List → another full page reload ───────────────
-            print("[4/5] Clicking Get List …")
+            try:
+                page.select_option(course_sel, value=COURSE_VAL)
+                print(f"   Course selected: value={COURSE_VAL}")
+            except Exception:
+                print(f"   ⚠️  value={COURSE_VAL} not found — see course options above")
+                raise
+
+            # ── 5. Click Get List ──────────────────────────────────────────
+            print("[4/4] Clicking Get List …")
             page.click("input[value='Get List']")
             page.wait_for_load_state("domcontentloaded", timeout=30_000)
-            time.sleep(2)   # Let table rows finish rendering
-            screenshot(page, "debug_screenshot.png")
+            time.sleep(3)
+            screenshot(page, "debug_screenshot.png")   # Overwrite with results state
 
-            # ── 5. Parse all table rows into array ─────────────────────────
-            print("[5/5] Parsing results …")
+            # ── Parse results table ────────────────────────────────────────
             rows = page.query_selector_all("tr")
             data = []
             for row in rows:
@@ -134,33 +157,34 @@ def main():
                 if cells:
                     data.append(cells)
 
-            print(f"   Rows in table : {len(data)}")
+            print(f"\n   Table rows parsed : {len(data)}")
+            if data:
+                print(f"   Sample rows       : {data[:3]}")
 
             total_seats   = 0
             batch_details = []
             for row in data:
                 if len(row) < 2:
                     continue
-                seat_text = row[1]
-                # Must be a plain integer 1–999 (excludes dates like "20")
-                if seat_text.isdigit() and 1 <= int(seat_text) <= 999:
-                    count = int(seat_text)
+                if row[1].isdigit() and 1 <= int(row[1]) <= 999:
+                    count = int(row[1])
                     total_seats += count
                     batch_details.append(f"{row[0][:45]}: {count} seats")
 
-            print(f"   Total seats   : {total_seats}")
+            print(f"   Total seats found : {total_seats}")
 
-            # Always notify in test mode regardless of seat count
+            # Always notify in test mode
+            city_label = POU_LABEL if POU_LABEL else auto
             if total_seats > 0:
                 msg = (
-                    f"🚨 {total_seats} seats found!\n"
+                    f"🚨 {total_seats} seats found in {city_label}!\n"
                     + "\n".join(batch_details)
                 )
             else:
                 msg = (
-                    f"✅ Pipeline OK — scrape ran successfully.\n"
-                    f"Seats: 0  |  Table rows parsed: {len(data)}\n"
-                    "(Check debug_screenshot in Artifacts if seats exist on site)"
+                    f"✅ Pipeline OK — scrape completed.\n"
+                    f"City: {city_label}  |  Seats: 0  |  Rows: {len(data)}\n"
+                    "(Check debug_screenshot in Artifacts)"
                 )
             send_push(msg)
 
@@ -168,7 +192,7 @@ def main():
             print(f"\n❌  {exc}")
             screenshot(page, "error_screenshot.png")
             send_push(f"❌ Test failed: {str(exc)[:120]}", title="ICAI Test — ERROR")
-            # No sys.exit(1) — ensures GitHub uploads screenshots
+            # No sys.exit(1) — keeps artifact upload step alive
 
         finally:
             browser.close()
