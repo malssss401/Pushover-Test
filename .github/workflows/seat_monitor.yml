@@ -1,4 +1,4 @@
-name: Playwright One-Time Test
+name: Playwright Slow-Server Test
 
 on:
   workflow_dispatch:
@@ -6,6 +6,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10 # Increase total job limit
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -24,4 +25,11 @@ jobs:
         env:
           PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
           PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
-        run: python seat_check.py
+        run: python test_seat_check.py
+
+      - name: Upload Debug Screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: "*.png"
