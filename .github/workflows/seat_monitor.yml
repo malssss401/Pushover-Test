@@ -1,49 +1,63 @@
-name: Playwright Stealth One-Time Test
+# .github/workflows/test_monitor.yml
+#
+# ICAI Seat Monitor — One-Time Manual Test
+# ==========================================
+# Runs test_seat_check.py (single scrape, no 5-min loop).
+# Sends a Pushover notification regardless of seat count so you can
+# confirm scraping + notification are both working before enabling
+# the hourly production workflow.
+#
+# How to use:
+#   Actions tab → "ICAI Seat Monitor — Test" → "Run workflow" button
+
+name: ICAI Seat Monitor — Test
 
 on:
-  workflow_dispatch:
-    # This allows you to click the "Run workflow" button manually in the Actions tab
+  workflow_dispatch:   # Manual trigger only — no schedule
 
 jobs:
-  test_run:
+  one-time-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    
+    timeout-minutes: 15   # Single run should finish well under this
+
     steps:
-      - name: Checkout Repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      - name: Install Stealth Dependencies
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          # We include playwright-stealth and its browser requirements
           pip install playwright requests playwright-stealth
-          playwright install chromium --with-deps
 
-      - name: Execute Stealth Script
+      - name: Install Chromium browser
+        run: playwright install chromium --with-deps
+
+      - name: Run one-time test
         env:
-          PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
+          PUSHOVER_USER:  ${{ secrets.PUSHOVER_USER }}
           PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
         run: |
-          if [ -f "seat_check.py" ]; then
-            python seat_check.py
+          if [ -f "test_seat_check.py" ]; then
+            python test_seat_check.py
           else
-            echo "❌ ERROR: seat_check.py not found in the root directory!"
+            echo "❌  test_seat_check.py not found in repository root!"
             ls -R
             exit 1
           fi
 
-      - name: Upload Screenshots (Check these if count is 0)
+      # Always upload screenshots — critical for debugging when scrape returns 0
+      - name: Upload debug screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: stealth-debug-logs
+          name: test-screenshots
           path: |
             debug_screenshot.png
             error_screenshot.png
           retention-days: 1
+          if-no-files-found: ignore
