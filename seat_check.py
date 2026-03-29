@@ -25,12 +25,12 @@ REGION_VAL = "4"            # Southern
 
 # POU: set to None to use auto-selected first city, or a city name string
 # Note: site uses ALL CAPS for city names — match exactly
-POU_LABEL  = "BENGALURU"    # None = auto (Alappuzha), or e.g. "BENGALURU", "CHENNAI"
+POU_LABEL  = "CHENNAI"    # None = auto (Alappuzha), or e.g. "BENGALURU", "CHENNAI"
 
 # Course: value from page source. Script will print all options if this fails.
 # 48  = AICITSS – Advanced Information Technology
 # MCS = Advanced (ICITSS) MCS Course — value printed by script on first run
-COURSE_LABEL = "Advanced (ICITSS) MCS Course"   # Select by label (more reliable than value)
+COURSE_LABEL = "AICITSS – Advanced Information Technology"   # Select by label (more reliable than value)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _load_stealth():
