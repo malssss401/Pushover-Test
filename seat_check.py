@@ -1,7 +1,7 @@
 import os
 import time
 from playwright.sync_api import sync_playwright
-from playwright_stealth import stealth_sync
+from playwright_stealth import stealth  # <--- Changed this from stealth_sync
 import requests
 
 USER_KEY = os.environ.get("PUSHOVER_USER")
@@ -18,43 +18,40 @@ def run_test():
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
         page = context.new_page()
-        stealth_sync(page)
+        
+        # Correct usage of the stealth plugin
+        stealth(page)
 
         try:
             print("🚀 Loading Website...")
-            # We use a very long timeout (90s) just for the initial load
             page.goto("https://www.icaionlineregistration.org/launchbatchdetail.aspx", timeout=90000)
             
-            # 1. Check for Cloudflare/Bot protection
+            # Save a screenshot immediately so we have an artifact no matter what
             time.sleep(5)
-            page.screenshot(path="debug_screenshot.png") # Save immediately to see what we're looking at
+            page.screenshot(path="debug_screenshot.png")
             
-            print("📍 Looking for Region dropdown...")
-            # We use a broader selector in case the ID is slightly different
-            region_dropdown = page.wait_for_selector("select", timeout=30000)
-            
-            # 2. Select Southern
-            # Using the value '4' directly on the first select found if ID fails
+            print("📍 Selecting Region...")
+            # Using broader 'contains' selector to avoid ID mismatches
+            page.wait_for_selector("select[id*='reg']", timeout=30000)
             page.select_option("select[id*='reg']", value="4")
-            print("✅ Selected Southern. Waiting for Postback...")
             
-            # Wait for the City dropdown to become 'enabled'
+            print("⏳ Waiting for POU to unlock...")
+            # Wait for the City dropdown to become enabled
             page.wait_for_function("() => !document.querySelector('select[id*=\"POU\"]').disabled", timeout=30000)
             
-            # 3. Select City and Course
-            print("🏙️ Selecting Alappuzha & Course...")
+            print("🏙️ Selecting City & Course...")
             page.select_option("select[id*='POU']", value="101")
             page.select_option("select[id*='Course']", value="48")
 
-            # 4. Search
             print("🔍 Clicking Search...")
             page.click("input[id*='Search']")
             
-            # Wait for any table to appear
-            page.wait_for_selector("table", timeout=30000)
+            # Wait for any table rows to appear
+            page.wait_for_selector("tr", timeout=30000)
+            time.sleep(2)
             page.screenshot(path="debug_screenshot.png")
 
-            # 5. Parse
+            # Count seats
             rows = page.query_selector_all("tr")
             total_seats = 0
             for row in rows:
@@ -69,8 +66,7 @@ def run_test():
         except Exception as e:
             print(f"❌ Crash Details: {e}")
             page.screenshot(path="error_screenshot.png")
-            send_push(f"⚠️ Script crashed: {str(e)[:50]}")
-            # Don't exit(1) yet so the Action finishes 'successfully' and uploads the artifact
+            send_push(f"⚠️ Script error: {str(e)[:50]}")
         finally:
             browser.close()
 
