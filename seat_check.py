@@ -14,49 +14,45 @@ def send_push(message):
 
 def run_test():
     with sync_playwright() as p:
-        # Launch with specific arguments to bypass detection
-        browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
-        
-        # Mimic a high-end Windows Chrome user perfectly
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            viewport={'width': 1920, 'height': 1080}
-        )
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
         page = context.new_page()
 
         try:
-            print("⚡ Navigating...")
-            # We go to the URL and wait only for the first bit of data
-            page.goto("https://www.icaionlineregistration.org/launchbatchdetail.aspx", wait_until="commit", timeout=30000)
+            print("🚀 Loading page...")
+            page.goto("https://www.icaionlineregistration.org/launchbatchdetail.aspx", wait_until="load")
 
-            # --- STEP 1: REGION ---
-            print("📍 Selecting Southern (4)...")
-            page.wait_for_selector("select[id*='ddlRegion']", timeout=10000)
-            page.select_option("select[id*='ddlRegion']", value="4")
+            # --- STEP 1: TRIGGER THE POSTBACK ---
+            print("📍 Selecting Southern and triggering JavaScript...")
+            # We don't just select; we select and then manually fire the 'change' event
+            page.select_option("select[id='ddl_reg']", value="4")
+            page.eval_on_selector("select[id='ddl_reg']", "el => el.dispatchEvent(new Event('change', { bubbles: True }))")
             
-            # --- STEP 2: WAIT FOR AJAX ---
-            # Instead of networkidle, we wait for the POU dropdown to NOT be disabled
-            print("⏳ Waiting for POU to unlock...")
-            page.wait_for_function("id => !document.getElementById(id).disabled", 
-                                    arg="ctl00_ContentPlaceHolder1_ddlPOU", timeout=15000)
+            # This causes a page reload. We must wait for the network to be quiet again.
+            page.wait_for_load_state("networkidle")
+            time.sleep(3) # Safety buffer for the ASP.NET state to settle
 
-            # --- STEP 3: CITY & COURSE ---
-            print("🏙️ Selecting Alappuzha (101)...")
+            # --- STEP 2: SELECT CITY & COURSE ---
+            print("🏙️ Selecting Alappuzha & Course...")
+            # Ensure the city dropdown is actually ready
+            page.wait_for_selector("option[value='101']", state="attached", timeout=10000)
+            
             page.select_option("select[id*='ddlPOU']", value="101")
             page.select_option("select[id*='ddlCourse']", value="48")
 
-            # --- STEP 4: SEARCH ---
+            # --- STEP 3: SEARCH ---
             print("🔍 Clicking Search...")
+            # Using 'click' with a forced wait for the table
             page.click("input[id*='btnSearch']")
             
-            # Wait specifically for the results table or the "No Record" message
-            page.wait_for_selector("table, .alert, b", timeout=15000)
-            
-            # Final 2-second breath for the text to render
+            # Look for the table specifically
+            page.wait_for_selector("tr", timeout=15000)
             time.sleep(2)
+            
+            # Screenshot for your debug archive
             page.screenshot(path="debug_screenshot.png")
 
-            # --- STEP 5: COUNT ---
+            # --- STEP 4: COUNT ---
             rows = page.query_selector_all("tr")
             total_seats = 0
             for row in rows:
@@ -71,7 +67,7 @@ def run_test():
         except Exception as e:
             print(f"❌ Error: {e}")
             page.screenshot(path="error_screenshot.png")
-            send_push(f"⚠️ Script failed. Server might be blocking.")
+            send_push(f"⚠️ Script failed. Table did not load.")
         finally:
             browser.close()
 
