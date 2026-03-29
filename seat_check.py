@@ -1,79 +1,76 @@
 """
-ICAI Seat Monitor — One-Time Test Script
-=========================================
-Runs a SINGLE check against the live ICAI website and sends a Pushover
-notification regardless of seat count, so you can verify the entire
-pipeline (browser → scrape → notify) works end-to-end.
-
-Use the companion workflow:  .github/workflows/test_monitor.yml
+ICAI Seat Monitor — One-Time Test
+===================================
+Single scrape run against the live ICAI website.
+Always sends a Pushover notification (success or failure) so you
+can confirm the full pipeline works before enabling the hourly schedule.
 """
 
 import os
 import sys
 import time
 import requests
-from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
-# ── Configuration (must match seat_check.py) ──────────────────────────────────
-CONFIG = {
-    "url":        "https://www.icaionlineregistration.org/launchbatchdetail.aspx",
-    "region_val": "4",    # Southern
-    "pou_val":    "101",  # Alappuzha (testing) — change to your city for prod
-    "course_val": "48",   # AICITSS – Advanced IT
-}
-
-PUSHOVER_USER  = os.environ.get("PUSHOVER_USER", "")
-PUSHOVER_TOKEN = os.environ.get("PUSHOVER_TOKEN", "")
-
-
-# ── Stealth import ─────────────────────────────────────────────────────────────
+# ── Stealth: handles ALL known playwright-stealth API versions ─────────────────
 def _load_stealth():
     try:
         from playwright_stealth import stealth_sync
-        return stealth_sync
-    except ImportError:
+        if callable(stealth_sync):
+            return stealth_sync
+    except (ImportError, TypeError):
         pass
     try:
         from playwright_stealth import stealth
         if callable(stealth):
             return stealth
-    except ImportError:
+    except (ImportError, TypeError):
         pass
+    print("⚠️  playwright-stealth not available — continuing without stealth.")
     return None
 
-STEALTH_FN = _load_stealth()
+
+# ── Config ─────────────────────────────────────────────────────────────────────
+URL         = "https://www.icaionlineregistration.org/launchbatchdetail.aspx"
+REGION_VAL  = "4"    # Southern
+POU_VAL     = "101"  # Alappuzha (change to your target city value)
+COURSE_VAL  = "48"   # AICITSS – Advanced Information Technology
+
+PUSHOVER_USER  = os.environ.get("PUSHOVER_USER", "")
+PUSHOVER_TOKEN = os.environ.get("PUSHOVER_TOKEN", "")
 
 
-# ── Pushover ───────────────────────────────────────────────────────────────────
+# ── Helpers ────────────────────────────────────────────────────────────────────
 def send_push(message: str, title: str = "ICAI Test") -> None:
     if not PUSHOVER_USER or not PUSHOVER_TOKEN:
-        print("⚠️  Pushover credentials not found in environment.")
+        print("⚠️  Pushover secrets missing — skipping notification.")
         return
-    resp = requests.post(
-        "https://api.pushover.net/1/messages.json",
-        data={
-            "token":   PUSHOVER_TOKEN,
-            "user":    PUSHOVER_USER,
-            "title":   title,
-            "message": message,
-        },
-        timeout=15,
-    )
-    print(f"Pushover response → HTTP {resp.status_code}: {resp.text}")
+    try:
+        resp = requests.post(
+            "https://api.pushover.net/1/messages.json",
+            data={"token": PUSHOVER_TOKEN, "user": PUSHOVER_USER,
+                  "title": title, "message": message},
+            timeout=15,
+        )
+        print(f"Pushover → HTTP {resp.status_code}: {resp.text}")
+    except Exception as exc:
+        print(f"Pushover send failed: {exc}")
 
 
-# ── Screenshot helper ──────────────────────────────────────────────────────────
-def _safe_screenshot(page, path: str) -> None:
+def screenshot(page, path: str) -> None:
+    """Save screenshot — never raises so artifacts always exist."""
     try:
         page.screenshot(path=path, full_page=True)
-        print(f"📸  Screenshot saved → {path}")
+        print(f"📸  Saved {path}")
     except Exception as exc:
-        print(f"⚠️  Screenshot failed: {exc}")
+        print(f"Screenshot failed ({path}): {exc}")
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main():
-    print("=== ICAI One-Time Test ===\n")
+    from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+
+    STEALTH = _load_stealth()
+    print("🕵️  Stealth active." if STEALTH else "⚠️  No stealth.")
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
@@ -94,113 +91,122 @@ def main():
         )
         page = context.new_page()
 
-        # Block heavy assets
+        # Block images/fonts/CSS — speeds up load on slow government server
         page.route(
             "**/*.{png,jpg,jpeg,gif,svg,ico,woff,woff2,ttf,otf,css}",
             lambda route: route.abort(),
         )
 
-        if STEALTH_FN:
-            STEALTH_FN(page)
-            print("🕵️  Stealth mode active.")
+        if STEALTH:
+            STEALTH(page)
 
         try:
-            # Step 1: Load
-            print("1. Loading ICAI page …")
-            page.goto(CONFIG["url"], wait_until="domcontentloaded", timeout=60_000)
-            _safe_screenshot(page, "debug_screenshot.png")  # Early capture
+            # ── Step 1: Load page ──────────────────────────────────────────
+            print("\n[1/6] Loading ICAI page …")
+            page.goto(URL, wait_until="domcontentloaded", timeout=60_000)
+            screenshot(page, "debug_screenshot.png")   # Save immediately
 
-            # Step 2: Region
-            print(f"2. Selecting Region ({CONFIG['region_val']}) …")
+            # ── Step 2: Select Region ──────────────────────────────────────
+            print(f"[2/6] Selecting Region (value={REGION_VAL}) …")
             page.wait_for_selector("select[id*='reg']", state="visible", timeout=20_000)
-            page.select_option("select[id*='reg']", value=CONFIG["region_val"])
+            page.select_option("select[id*='reg']", value=REGION_VAL)
 
-            # Step 3: Wait for POU
-            print("3. Waiting for POU dropdown to unlock …")
+            # ── Step 3: Wait for POU dropdown to unlock (ASP.NET postback) ─
+            print("[3/6] Waiting for POU dropdown to unlock …")
             try:
                 page.wait_for_function(
-                    "() => { const el = document.querySelector('select[id*=\"POU\"]'); "
-                    "return el && !el.disabled && el.options.length > 1; }",
+                    "() => {"
+                    "  const el = document.querySelector('select[id*=\"POU\"]');"
+                    "  return el && !el.disabled && el.options.length > 1;"
+                    "}",
                     timeout=30_000,
                 )
             except PWTimeout:
-                # Fallback: manually fire the change event
-                print("   Fallback: dispatching change event on Region …")
+                print("   ↳ Timeout — firing JS change event as fallback …")
                 page.eval_on_selector(
                     "select[id*='reg']",
-                    "el => el.dispatchEvent(new Event('change', { bubbles: true }))"
+                    "el => el.dispatchEvent(new Event('change', { bubbles: true }))",
                 )
                 page.wait_for_function(
-                    "() => { const el = document.querySelector('select[id*=\"POU\"]'); "
-                    "return el && !el.disabled; }",
+                    "() => {"
+                    "  const el = document.querySelector('select[id*=\"POU\"]');"
+                    "  return el && !el.disabled;"
+                    "}",
                     timeout=20_000,
                 )
 
-            # Step 4: POU & Course
-            print(f"4. Selecting POU ({CONFIG['pou_val']}) and Course ({CONFIG['course_val']}) …")
-            page.wait_for_selector(f"option[value='{CONFIG['pou_val']}']", state="attached", timeout=15_000)
-            page.select_option("select[id*='POU']",    value=CONFIG["pou_val"])
+            # ── Step 4: Select POU (city) and Course ──────────────────────
+            print(f"[4/6] Selecting POU ({POU_VAL}) and Course ({COURSE_VAL}) …")
+            page.wait_for_selector(
+                f"option[value='{POU_VAL}']", state="attached", timeout=15_000
+            )
+            page.select_option("select[id*='POU']",    value=POU_VAL)
             time.sleep(1)
-            page.select_option("select[id*='Course']", value=CONFIG["course_val"])
+            page.select_option("select[id*='Course']", value=COURSE_VAL)
 
-            # Step 5: Search
-            print("5. Clicking Search …")
-            page.click("input[id*='Search'], input[id*='search'], input[type='submit']")
-
+            # ── Step 5: Click Search ───────────────────────────────────────
+            print("[5/6] Clicking Search …")
+            page.click(
+                "input[id*='Search'], "
+                "input[id*='search'], "
+                "input[value='Get List'], "
+                "input[type='submit']"
+            )
             try:
                 page.wait_for_selector("tr", timeout=30_000)
             except PWTimeout:
                 pass
-
             time.sleep(3)
-            _safe_screenshot(page, "debug_screenshot.png")  # Post-search capture
+            screenshot(page, "debug_screenshot.png")   # Overwrite with post-search state
 
-            # Step 6: Parse into array
-            print("6. Parsing results …")
+            # ── Step 6: Parse table into array and count seats ─────────────
+            print("[6/6] Parsing results …")
             rows = page.query_selector_all("tr")
-            data_array = [
-                [c.inner_text().strip() for c in row.query_selector_all("td")]
-                for row in rows
-            ]
-            data_array = [r for r in data_array if r]  # Remove empties
+            data = []
+            for row in rows:
+                cells = [c.inner_text().strip() for c in row.query_selector_all("td")]
+                if cells:
+                    data.append(cells)
 
-            total_seats = 0
+            total_seats   = 0
             batch_details = []
-            for row in data_array:
+            for row in data:
                 if len(row) < 2:
                     continue
-                if row[1].isdigit():
-                    count = int(row[1])
+                seat_text = row[1]
+                if seat_text.isdigit():
+                    count = int(seat_text)
                     if 1 <= count <= 999:
                         total_seats += count
                         batch_details.append(f"{row[0][:40]}: {count} seats")
 
-            # Step 7: Notify — always send in test mode
-            print(f"7. Total seats detected: {total_seats}")
+            print(f"   Total rows parsed : {len(data)}")
+            print(f"   Total seats found : {total_seats}")
+
+            # Always notify in test mode
             if total_seats > 0:
                 msg = (
-                    f"✅ TEST SUCCESS — {total_seats} seats found!\n"
+                    f"✅ Test OK — {total_seats} seats found!\n"
                     + "\n".join(batch_details)
                 )
             else:
                 msg = (
-                    "✅ Pipeline works! Connection OK.\n"
-                    f"Seats currently available: 0\n"
-                    f"(Table rows parsed: {len(data_array)})"
+                    f"✅ Pipeline works! Scrape ran successfully.\n"
+                    f"Seats available: 0  |  Rows parsed: {len(data)}\n"
+                    f"(If seats exist on the site, check debug_screenshot in Artifacts)"
                 )
-            send_push(msg, title="ICAI Test Result")
+            send_push(msg)
 
         except Exception as exc:
-            err_msg = f"❌ Test failed: {exc}"
-            print(err_msg)
-            _safe_screenshot(page, "error_screenshot.png")
-            send_push(err_msg[:150], title="ICAI Test — ERROR")
-            # Do NOT sys.exit(1) here — lets GitHub upload the screenshots first
+            print(f"\n❌ Error: {exc}")
+            screenshot(page, "error_screenshot.png")
+            send_push(f"❌ Test failed: {str(exc)[:120]}", title="ICAI Test — ERROR")
+            # No sys.exit(1) — lets GitHub upload screenshots first
 
         finally:
             browser.close()
 
-    print("\n=== Test complete ===")
+    print("\nDone.")
 
 
 if __name__ == "__main__":
