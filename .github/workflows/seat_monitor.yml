@@ -1,24 +1,17 @@
-# .github/workflows/test_monitor.yml
-#
-# ICAI Seat Monitor — One-Time Manual Test
-# ==========================================
-# Runs test_seat_check.py (single scrape, no 5-min loop).
-# Sends a Pushover notification regardless of seat count so you can
-# confirm scraping + notification are both working before enabling
-# the hourly production workflow.
-#
-# How to use:
-#   Actions tab → "ICAI Seat Monitor — Test" → "Run workflow" button
+# .github/workflows/seat_monitor.yml
 
 name: ICAI Seat Monitor — Test
 
 on:
-  workflow_dispatch:   # Manual trigger only — no schedule
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # Fixes the Node.js 20 deprecation warning
 
 jobs:
   one-time-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15   # Single run should finish well under this
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
@@ -29,33 +22,25 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Install Python dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install playwright requests playwright-stealth
 
-      - name: Install Chromium browser
+      - name: Install Chromium
         run: playwright install chromium --with-deps
 
       - name: Run one-time test
         env:
           PUSHOVER_USER:  ${{ secrets.PUSHOVER_USER }}
           PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
-        run: |
-          if [ -f "test_seat_check.py" ]; then
-            python test_seat_check.py
-          else
-            echo "❌  test_seat_check.py not found in repository root!"
-            ls -R
-            exit 1
-          fi
+        run: python test_seat_check.py
 
-      # Always upload screenshots — critical for debugging when scrape returns 0
-      - name: Upload debug screenshots
+      - name: Upload screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-screenshots
+          name: screenshots
           path: |
             debug_screenshot.png
             error_screenshot.png
