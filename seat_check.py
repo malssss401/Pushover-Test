@@ -1,11 +1,20 @@
 """
 ICAI Seat Monitor — One-Time Test
 ===================================
-Uses full course names as they appear in the ICAI dropdown.
-Course matching is case-insensitive so minor site-side text changes
-(extra spaces, capitalisation) do not break the script.
+Handles all three outcomes the ICAI site can return:
 
-CONFIG block is the only section you need to edit.
+  Outcome 1 — No batches scheduled
+              Site shows: "Sorry, no records found."
+              Meaning: No batches announced yet for this city/course.
+
+  Outcome 2 — Batches exist but all seats taken
+              Site shows the table, but every Available Seats column = 0.
+
+  Outcome 3 — Seats available
+              At least one batch has seats > 0.  ← the alert that matters
+
+TEST MODE  : All three outcomes send a Pushover notification.
+PRODUCTION : Only Outcome 3 sends a notification (silence on 1 & 2).
 """
 
 import os
@@ -21,11 +30,11 @@ PUSHOVER_TOKEN = os.environ.get("PUSHOVER_TOKEN", "")
 URL        = "https://www.icaionlineregistration.org/launchbatchdetail.aspx"
 REGION_VAL = "4"        # Southern = 4
 
-# POU: set to None to use auto-selected first city (Alappuzha).
-# Otherwise use the city name exactly as it appears in the dropdown (ALL CAPS).
+# POU: None = auto-selected first city (Alappuzha).
+# Otherwise use city name exactly as shown in dropdown (ALL CAPS).
 POU_LABEL  = "CHENNAI"  # e.g. "CHENNAI", "BENGALURU", "ALAPPUZHA", or None
 
-# Full course name exactly as shown in the ICAI dropdown:
+# Full course name exactly as shown in ICAI dropdown:
 #   "AICITSS - Advanced Information Technology"
 #   "Advanced (ICITSS) MCS Course"
 COURSE_NAME = "AICITSS - Advanced Information Technology"
@@ -70,40 +79,34 @@ def screenshot(page, path: str) -> None:
 
 def select_course(page, course_sel: str, course_name: str) -> str:
     """
-    Selects the course whose label matches course_name (case-insensitive,
-    strips extra whitespace). Prints all available options to the GitHub
-    Actions log so you can verify the exact label the site uses.
-    Returns the full label of the matched course.
-    Raises ValueError with the full option list if no match is found.
+    Selects course by full name (case-insensitive, trims whitespace).
+    Falls back to partial match if exact match not found.
+    Prints all available options to the GitHub Actions log.
+    Raises ValueError with full option list if no match at all.
     """
     options = page.eval_on_selector(
         course_sel,
         "el => Array.from(el.options).map(o => ({value: o.value, text: o.text.trim()}))"
     )
-
-    print(f"   Available Course options:")
+    print("   Available Course options:")
     for opt in options:
         print(f"     value={opt['value']}  →  '{opt['text']}'")
 
     target = course_name.strip().lower()
-    match  = next(
-        (o for o in options if o["text"].lower() == target),
-        None
-    )
 
-    # Fallback: partial match in case the site adds/removes a prefix
+    # Try exact match first
+    match = next((o for o in options if o["text"].lower() == target), None)
+
+    # Fall back to partial match
     if not match:
-        match = next(
-            (o for o in options if target in o["text"].lower()),
-            None
-        )
+        match = next((o for o in options if target in o["text"].lower()), None)
         if match:
             print(f"   ⚠️  Exact match not found — using partial match: '{match['text']}'")
 
     if not match:
         raise ValueError(
-            f"Course '{course_name}' not found in dropdown.\n"
-            f"Available options: {[o['text'] for o in options]}"
+            f"Course '{course_name}' not found.\n"
+            f"Available: {[o['text'] for o in options]}"
         )
 
     page.select_option(course_sel, value=match["value"])
@@ -145,19 +148,19 @@ def main():
             stealth_fn(page)
 
         try:
-            # ── 1. Load page ───────────────────────────────────────────────
+            # ── 1. Load ────────────────────────────────────────────────────
             print("\n[1/4] Loading page …")
             page.goto(URL, wait_until="domcontentloaded", timeout=60_000)
             screenshot(page, "debug_screenshot.png")
 
-            # ── 2. Select Region → __doPostBack causes full page reload ────
+            # ── 2. Select Region → __doPostBack → full page reload ─────────
             print("[2/4] Selecting Region …")
             page.wait_for_selector("select[id*='reg']", state="visible", timeout=15_000)
             page.select_option("select[id*='reg']", value=REGION_VAL)
             page.wait_for_load_state("domcontentloaded", timeout=30_000)
-            time.sleep(2)   # Let postback finish writing POU option tags
+            time.sleep(2)
 
-            # ── 3. POU selection ───────────────────────────────────────────
+            # ── 3. POU ─────────────────────────────────────────────────────
             pou_sel    = "select[id*='POU'], select[id*='pou'], select[id*='Pou']"
             course_sel = "select[id*='Course'], select[id*='course']"
 
@@ -179,8 +182,7 @@ def main():
                 try:
                     page.select_option(pou_sel, label=POU_LABEL, timeout=10_000)
                 except Exception:
-                    # Case-insensitive JS fallback
-                    print("   ⚠️  Exact label failed — trying case-insensitive JS match …")
+                    print("   ⚠️  Exact label failed — trying JS case-insensitive match …")
                     matched = page.eval_on_selector(
                         pou_sel,
                         f"""el => {{
@@ -198,28 +200,27 @@ def main():
                         )
                     print(f"   ✅  Matched via JS: '{matched}'")
 
-            # ── 4. Select Course ───────────────────────────────────────────
-            print(f"[4/4a] Selecting course '{COURSE_NAME}' …")
+            # ── 4. Course ──────────────────────────────────────────────────
+            print(f"[4/4a] Selecting course …")
             selected_course = select_course(page, course_sel, COURSE_NAME)
+            screenshot(page, "debug_screenshot.png")   # Confirm correct course before Get List
 
-            # Screenshot after course selected — confirms correct selection
-            # before we wait on Get List (useful if Get List times out)
-            screenshot(page, "debug_screenshot.png")
-
-            # ── 5. Click Get List ──────────────────────────────────────────
+            # ── 5. Get List ────────────────────────────────────────────────
             print("[4/4b] Clicking Get List …")
             page.click("input[value='Get List']")
-
-            # 60s timeout — Chennai / large cities return more rows and the
-            # ICAI server takes proportionally longer to respond
+            # 60s — Chennai and larger cities take longer to return results
             page.wait_for_load_state("domcontentloaded", timeout=60_000)
             time.sleep(3)
             screenshot(page, "debug_screenshot.png")   # Final state with results
 
-            # ── Parse results table ────────────────────────────────────────
-            # Column layout confirmed from site screenshots:
-            # [0] Batch No  [1] Available Seats  [2] From Date  [3] To Date
-            # [4] Batch Time  [5] Pou Name  [6] Course  [7] Open For
+            # ── Detect site-level "no records" message ─────────────────────
+            page_text  = page.inner_text("body").lower()
+            no_records = "no records found" in page_text
+
+            # ── Parse table ────────────────────────────────────────────────
+            # Columns: [0] Batch No  [1] Available Seats  [2] From Date
+            #          [3] To Date   [4] Batch Time        [5] Pou Name
+            #          [6] Course    [7] Open For
             rows = page.query_selector_all("tr")
             data = []
             for row in rows:
@@ -244,7 +245,7 @@ def main():
                 batch_time = row[4] if len(row) > 4 else ""
 
                 if not seat_text.isdigit():
-                    continue   # Skip header rows
+                    continue
 
                 seats = int(seat_text)
                 if seats > 0:
@@ -264,8 +265,15 @@ def main():
             for bn in batches_zero:
                 print(f"     ⭕  {bn} → 0 seats")
 
-            # ── Notification ───────────────────────────────────────────────
+            # ══════════════════════════════════════════════════════════════
+            # NOTIFICATION LOGIC
+            # Three outcomes — all notify in TEST mode.
+            # In production only Outcome 3 will send a notification.
+            # ══════════════════════════════════════════════════════════════
+
             if batches_with_seats:
+                # ── OUTCOME 3: Seats available ─────────────────────────────
+                # This is the ONLY outcome that notifies in production.
                 lines = [
                     f"• {b['batch']}\n"
                     f"  Seats : {b['seats']}  |  {b['dates']}\n"
@@ -280,15 +288,36 @@ def main():
                 if batches_zero:
                     msg += f"\n\n(+ {len(batches_zero)} batch(es) fully booked)"
                 send_push(msg, title=f"ICAI — {city_display} Seats Open!")
-            else:
-                total = len(batches_with_seats) + len(batches_zero)
+
+            elif no_records:
+                # ── OUTCOME 1: No batches announced yet ────────────────────
+                # Confirmed on Chennai MCS — site returns this when no batches
+                # have been scheduled for the city/course combination.
+                # Production: silent. Test: notify to confirm pipeline works.
+                print("   ℹ️   Site returned 'no records found'.")
                 msg = (
-                    f"✅ Pipeline OK — scrape completed.\n"
-                    f"City   : {city_display}\n"
-                    f"Course : {selected_course}\n"
-                    f"Seats  : 0 across {total} batch(es)"
+                    f"ℹ️ No Batches Scheduled — {city_display}\n"
+                    f"{selected_course}\n\n"
+                    f"The ICAI site returned:\n"
+                    f"\"Sorry, no records found. Please change your "
+                    f"search parameters and try again.\"\n\n"
+                    f"Scraper is working correctly.\n"
+                    f"(Production will stay silent for this outcome.)"
                 )
-                send_push(msg, title="ICAI Test — 0 Seats")
+                send_push(msg, title="ICAI Test — No Batches Scheduled")
+
+            else:
+                # ── OUTCOME 2: Batches exist but all seats = 0 ─────────────
+                # Production: silent. Test: notify to confirm pipeline works.
+                total = len(batches_zero)
+                print(f"   ℹ️   {total} batch(es) found, all seats = 0.")
+                msg = (
+                    f"ℹ️ All Batches Fully Booked — {city_display}\n"
+                    f"{selected_course}\n\n"
+                    f"{total} batch(es) found, every seat is taken.\n\n"
+                    f"(Production will stay silent for this outcome.)"
+                )
+                send_push(msg, title="ICAI Test — All Seats Taken")
 
         except Exception as exc:
             print(f"\n❌  {exc}")
