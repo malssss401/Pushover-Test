@@ -6,7 +6,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10 # Increase total job limit
+    timeout-minutes: 10
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -18,14 +18,22 @@ jobs:
 
       - name: Install Dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install playwright requests
           playwright install chromium --with-deps
 
-      - name: Run Test
+      - name: Verify File and Run
         env:
           PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
           PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
-        run: python test_seat_check.py
+        run: |
+          if [ -f "seat_check.py" ]; then
+            python seat_check.py
+          else
+            echo "❌ ERROR: seat_check.py not found in the repository root!"
+            ls -R # This will list all files in the log so we can see where it is
+            exit 1
+          fi
 
       - name: Upload Debug Screenshot
         if: always()
