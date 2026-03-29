@@ -1,17 +1,25 @@
 """
 ICAI Seat Monitor — One-Time Test
 ===================================
-Single scrape run against the live ICAI website.
-Always sends a Pushover notification (success or failure) so you
-can confirm the full pipeline works before enabling the hourly schedule.
+Fix: ASP.NET __doPostBack causes a FULL PAGE RELOAD (not a DOM update).
+     Replaced wait_for_function with wait_for_load_state("domcontentloaded").
+     Screenshots confirm page + dropdowns load fine on GitHub runners.
 """
 
 import os
-import sys
 import time
 import requests
 
-# ── Stealth: handles ALL known playwright-stealth API versions ─────────────────
+PUSHOVER_USER  = os.environ.get("PUSHOVER_USER", "")
+PUSHOVER_TOKEN = os.environ.get("PUSHOVER_TOKEN", "")
+
+# ── Config ─────────────────────────────────────────────────────────────────────
+URL         = "https://www.icaionlineregistration.org/launchbatchdetail.aspx"
+REGION_VAL  = "4"    # Southern
+POU_VAL     = "101"  # Alappuzha
+COURSE_VAL  = "48"   # AICITSS – Advanced IT (value from page source)
+
+# ── Stealth loader (handles all playwright-stealth API versions) ───────────────
 def _load_stealth():
     try:
         from playwright_stealth import stealth_sync
@@ -25,52 +33,37 @@ def _load_stealth():
             return stealth
     except (ImportError, TypeError):
         pass
-    print("⚠️  playwright-stealth not available — continuing without stealth.")
     return None
 
-
-# ── Config ─────────────────────────────────────────────────────────────────────
-URL         = "https://www.icaionlineregistration.org/launchbatchdetail.aspx"
-REGION_VAL  = "4"    # Southern
-POU_VAL     = "101"  # Alappuzha (change to your target city value)
-COURSE_VAL  = "48"   # AICITSS – Advanced Information Technology
-
-PUSHOVER_USER  = os.environ.get("PUSHOVER_USER", "")
-PUSHOVER_TOKEN = os.environ.get("PUSHOVER_TOKEN", "")
-
-
-# ── Helpers ────────────────────────────────────────────────────────────────────
+# ── Pushover ───────────────────────────────────────────────────────────────────
 def send_push(message: str, title: str = "ICAI Test") -> None:
     if not PUSHOVER_USER or not PUSHOVER_TOKEN:
-        print("⚠️  Pushover secrets missing — skipping notification.")
+        print("⚠️  Pushover secrets missing.")
         return
     try:
-        resp = requests.post(
+        r = requests.post(
             "https://api.pushover.net/1/messages.json",
             data={"token": PUSHOVER_TOKEN, "user": PUSHOVER_USER,
                   "title": title, "message": message},
             timeout=15,
         )
-        print(f"Pushover → HTTP {resp.status_code}: {resp.text}")
-    except Exception as exc:
-        print(f"Pushover send failed: {exc}")
-
+        print(f"Pushover → HTTP {r.status_code}: {r.text}")
+    except Exception as e:
+        print(f"Pushover error: {e}")
 
 def screenshot(page, path: str) -> None:
-    """Save screenshot — never raises so artifacts always exist."""
     try:
         page.screenshot(path=path, full_page=True)
-        print(f"📸  Saved {path}")
-    except Exception as exc:
-        print(f"Screenshot failed ({path}): {exc}")
-
+        print(f"📸  {path}")
+    except Exception as e:
+        print(f"Screenshot failed: {e}")
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main():
     from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
-    STEALTH = _load_stealth()
-    print("🕵️  Stealth active." if STEALTH else "⚠️  No stealth.")
+    stealth_fn = _load_stealth()
+    print("🕵️  Stealth active." if stealth_fn else "⚠️  No stealth (continuing anyway).")
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
@@ -91,76 +84,49 @@ def main():
         )
         page = context.new_page()
 
-        # Block images/fonts/CSS — speeds up load on slow government server
+        # Block heavy assets — speeds up government server
         page.route(
             "**/*.{png,jpg,jpeg,gif,svg,ico,woff,woff2,ttf,otf,css}",
             lambda route: route.abort(),
         )
-
-        if STEALTH:
-            STEALTH(page)
+        if stealth_fn:
+            stealth_fn(page)
 
         try:
-            # ── Step 1: Load page ──────────────────────────────────────────
-            print("\n[1/6] Loading ICAI page …")
+            # ── 1. Load page ───────────────────────────────────────────────
+            print("\n[1/5] Loading page …")
             page.goto(URL, wait_until="domcontentloaded", timeout=60_000)
-            screenshot(page, "debug_screenshot.png")   # Save immediately
+            screenshot(page, "debug_screenshot.png")
 
-            # ── Step 2: Select Region ──────────────────────────────────────
-            print(f"[2/6] Selecting Region (value={REGION_VAL}) …")
-            page.wait_for_selector("select[id*='reg']", state="visible", timeout=20_000)
+            # ── 2. Select Region → triggers ASP.NET __doPostBack (full reload)
+            print(f"[2/5] Selecting Region ({REGION_VAL}) …")
+            page.wait_for_selector("select[id*='reg']", state="visible", timeout=15_000)
             page.select_option("select[id*='reg']", value=REGION_VAL)
 
-            # ── Step 3: Wait for POU dropdown to unlock (ASP.NET postback) ─
-            print("[3/6] Waiting for POU dropdown to unlock …")
-            try:
-                page.wait_for_function(
-                    "() => {"
-                    "  const el = document.querySelector('select[id*=\"POU\"]');"
-                    "  return el && !el.disabled && el.options.length > 1;"
-                    "}",
-                    timeout=30_000,
-                )
-            except PWTimeout:
-                print("   ↳ Timeout — firing JS change event as fallback …")
-                page.eval_on_selector(
-                    "select[id*='reg']",
-                    "el => el.dispatchEvent(new Event('change', { bubbles: true }))",
-                )
-                page.wait_for_function(
-                    "() => {"
-                    "  const el = document.querySelector('select[id*=\"POU\"]');"
-                    "  return el && !el.disabled;"
-                    "}",
-                    timeout=20_000,
-                )
+            # KEY FIX: __doPostBack reloads the entire page.
+            # wait_for_load_state waits for that reload to complete.
+            # Do NOT use wait_for_function — the DOM is replaced, not updated.
+            print("   ↳ Waiting for page reload (postback) …")
+            page.wait_for_load_state("domcontentloaded", timeout=30_000)
 
-            # ── Step 4: Select POU (city) and Course ──────────────────────
-            print(f"[4/6] Selecting POU ({POU_VAL}) and Course ({COURSE_VAL}) …")
+            # ── 3. Select POU and Course (POU list is now populated) ───────
+            print(f"[3/5] Selecting POU ({POU_VAL}) …")
             page.wait_for_selector(
-                f"option[value='{POU_VAL}']", state="attached", timeout=15_000
+                f"select[id*='POU'] option[value='{POU_VAL}']",
+                state="attached", timeout=15_000
             )
             page.select_option("select[id*='POU']",    value=POU_VAL)
-            time.sleep(1)
             page.select_option("select[id*='Course']", value=COURSE_VAL)
 
-            # ── Step 5: Click Search ───────────────────────────────────────
-            print("[5/6] Clicking Search …")
-            page.click(
-                "input[id*='Search'], "
-                "input[id*='search'], "
-                "input[value='Get List'], "
-                "input[type='submit']"
-            )
-            try:
-                page.wait_for_selector("tr", timeout=30_000)
-            except PWTimeout:
-                pass
-            time.sleep(3)
-            screenshot(page, "debug_screenshot.png")   # Overwrite with post-search state
+            # ── 4. Click Get List → another full page reload ───────────────
+            print("[4/5] Clicking Get List …")
+            page.click("input[value='Get List']")
+            page.wait_for_load_state("domcontentloaded", timeout=30_000)
+            time.sleep(2)   # Let table rows finish rendering
+            screenshot(page, "debug_screenshot.png")
 
-            # ── Step 6: Parse table into array and count seats ─────────────
-            print("[6/6] Parsing results …")
+            # ── 5. Parse all table rows into array ─────────────────────────
+            print("[5/5] Parsing results …")
             rows = page.query_selector_all("tr")
             data = []
             for row in rows:
@@ -168,46 +134,46 @@ def main():
                 if cells:
                     data.append(cells)
 
+            print(f"   Rows in table : {len(data)}")
+
             total_seats   = 0
             batch_details = []
             for row in data:
                 if len(row) < 2:
                     continue
                 seat_text = row[1]
-                if seat_text.isdigit():
+                # Must be a plain integer 1–999 (excludes dates like "20")
+                if seat_text.isdigit() and 1 <= int(seat_text) <= 999:
                     count = int(seat_text)
-                    if 1 <= count <= 999:
-                        total_seats += count
-                        batch_details.append(f"{row[0][:40]}: {count} seats")
+                    total_seats += count
+                    batch_details.append(f"{row[0][:45]}: {count} seats")
 
-            print(f"   Total rows parsed : {len(data)}")
-            print(f"   Total seats found : {total_seats}")
+            print(f"   Total seats   : {total_seats}")
 
-            # Always notify in test mode
+            # Always notify in test mode regardless of seat count
             if total_seats > 0:
                 msg = (
-                    f"✅ Test OK — {total_seats} seats found!\n"
+                    f"🚨 {total_seats} seats found!\n"
                     + "\n".join(batch_details)
                 )
             else:
                 msg = (
-                    f"✅ Pipeline works! Scrape ran successfully.\n"
-                    f"Seats available: 0  |  Rows parsed: {len(data)}\n"
-                    f"(If seats exist on the site, check debug_screenshot in Artifacts)"
+                    f"✅ Pipeline OK — scrape ran successfully.\n"
+                    f"Seats: 0  |  Table rows parsed: {len(data)}\n"
+                    "(Check debug_screenshot in Artifacts if seats exist on site)"
                 )
             send_push(msg)
 
         except Exception as exc:
-            print(f"\n❌ Error: {exc}")
+            print(f"\n❌  {exc}")
             screenshot(page, "error_screenshot.png")
             send_push(f"❌ Test failed: {str(exc)[:120]}", title="ICAI Test — ERROR")
-            # No sys.exit(1) — lets GitHub upload screenshots first
+            # No sys.exit(1) — ensures GitHub uploads screenshots
 
         finally:
             browser.close()
 
     print("\nDone.")
-
 
 if __name__ == "__main__":
     main()
