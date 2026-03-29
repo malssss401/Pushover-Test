@@ -34,7 +34,7 @@ jobs:
         env:
           PUSHOVER_USER:  ${{ secrets.PUSHOVER_USER }}
           PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
-        run: python test_seat_check.py
+        run: python seat_check.py
 
       - name: Upload screenshots
         if: always()
