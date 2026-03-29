@@ -1,7 +1,8 @@
 import os
 import time
 from playwright.sync_api import sync_playwright
-from playwright_stealth import stealth  # <--- Changed this from stealth_sync
+# Using the specific sync function to avoid the 'module' error
+from playwright_stealth import stealth_sync 
 import requests
 
 USER_KEY = os.environ.get("PUSHOVER_USER")
@@ -16,22 +17,21 @@ def send_push(message):
 def run_test():
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+        context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         page = context.new_page()
         
-        # Correct usage of the stealth plugin
-        stealth(page)
+        # Corrected function call
+        stealth_sync(page)
 
         try:
             print("🚀 Loading Website...")
             page.goto("https://www.icaionlineregistration.org/launchbatchdetail.aspx", timeout=90000)
             
-            # Save a screenshot immediately so we have an artifact no matter what
+            # Save an immediate screenshot
             time.sleep(5)
             page.screenshot(path="debug_screenshot.png")
             
             print("📍 Selecting Region...")
-            # Using broader 'contains' selector to avoid ID mismatches
             page.wait_for_selector("select[id*='reg']", timeout=30000)
             page.select_option("select[id*='reg']", value="4")
             
@@ -46,12 +46,12 @@ def run_test():
             print("🔍 Clicking Search...")
             page.click("input[id*='Search']")
             
-            # Wait for any table rows to appear
+            # Wait for results table
             page.wait_for_selector("tr", timeout=30000)
             time.sleep(2)
             page.screenshot(path="debug_screenshot.png")
 
-            # Count seats
+            # Parse table
             rows = page.query_selector_all("tr")
             total_seats = 0
             for row in rows:
@@ -64,9 +64,9 @@ def run_test():
             send_push(f"✅ Success! Seats: {total_seats}")
 
         except Exception as e:
-            print(f"❌ Crash Details: {e}")
+            print(f"❌ Error: {e}")
             page.screenshot(path="error_screenshot.png")
-            send_push(f"⚠️ Script error: {str(e)[:50]}")
+            send_push(f"⚠️ Script Error: Check artifacts.")
         finally:
             browser.close()
 
