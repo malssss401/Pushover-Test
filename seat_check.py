@@ -3,76 +3,75 @@ import time
 from playwright.sync_api import sync_playwright
 import requests
 
-# Credentials
 USER_KEY = os.environ.get("PUSHOVER_USER")
 API_TOKEN = os.environ.get("PUSHOVER_TOKEN")
 
 def send_push(message):
-    print(f"Sending: {message}")
     requests.post("https://api.pushover.net/1/messages.json", data={
         "token": API_TOKEN, "user": USER_KEY, "message": message
     })
 
 def run_test():
     with sync_playwright() as p:
-        # Launch browser
         browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            viewport={'width': 1280, 'height': 800}
-        )
+        # Higher timeout (60s) to handle slow government servers
+        context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
         page = context.new_page()
+        page.set_default_timeout(60000) 
 
         try:
-            print("1. Navigating to ICAI...")
-            page.goto("https://www.icaionlineregistration.org/launchbatchdetail.aspx", wait_until="domcontentloaded")
+            print("1. Loading ICAI Page...")
+            page.goto("https://www.icaionlineregistration.org/launchbatchdetail.aspx", wait_until="networkidle")
 
-            # 1. Select Region (Value 4)
+            # Select Region
             print("2. Selecting Southern (Value 4)...")
             page.select_option("select[id*='ddlRegion']", value="4")
             
-            # Wait for the City dropdown to actually contain the value 101
-            print("Waiting for City list to populate...")
-            page.wait_for_selector("select[id*='ddlPOU'] option[value='101']", timeout=10000)
+            # Wait for the City list to actually contain Alappuzha (101)
+            page.wait_for_selector("option[value='101']", state="attached", timeout=30000)
 
-            # 2. Select POU (Value 101)
-            print("3. Selecting Alappuzha (Value 101)...")
+            # Select City & Course
+            print("3. Selecting Alappuzha & Course...")
             page.select_option("select[id*='ddlPOU']", value="101")
-            
-            # 3. Select Course (Value 48)
-            print("4. Selecting Course (Value 48)...")
             page.select_option("select[id*='ddlCourse']", value="48")
 
-            # 4. Click Search
-            print("5. Clicking Search...")
-            # We use 'dispatch_event' to ensure the ASP.NET click fires correctly
+            # Click Search
+            print("4. Clicking Search...")
             page.click("input[id*='btnSearch']")
             
-            # Wait for the table to appear (looking for the GridView ID)
-            print("Waiting for results table...")
-            page.wait_for_selector("table[id*='gvLaunchBatch']", timeout=10000)
-            
-            # Capture screenshot for your debug zip
-            page.screenshot(path="debug_screenshot.png")
+            # CRITICAL: Wait for the network to go quiet after the search
+            print("Waiting for results to load...")
+            page.wait_for_load_state("networkidle")
+            time.sleep(5) # Extra buffer for the table to render
 
-            # 5. Parse the table
-            rows = page.query_selector_all("table[id*='gvLaunchBatch'] tr")
+            # Take the debug screenshot
+            page.screenshot(path="debug_screenshot.png", full_page=True)
+
+            # Parse Table
+            rows = page.query_selector_all("tr")
             total_seats = 0
-            
+            found_data = []
+
             for row in rows:
                 cols = row.query_selector_all("td")
                 if len(cols) >= 2:
                     text = cols[1].inner_text().strip()
                     if text.isdigit():
-                        total_seats += int(text)
+                        count = int(text)
+                        total_seats += count
+                        found_data.append(f"Batch: {cols[0].inner_text()[:15]}.. -> {count}")
 
-            msg = f"✅ Success! Found {total_seats} seats using ID codes."
+            if total_seats > 0:
+                msg = f"✅ SUCCESS! Total Seats: {total_seats}\n" + "\n".join(found_data)
+            else:
+                msg = "🔍 Search finished, but 0 seats were counted in the table."
+            
             send_push(msg)
 
         except Exception as e:
             print(f"Error: {e}")
             page.screenshot(path="error_screenshot.png")
-            send_push(f"❌ Playwright Error: {str(e)}")
+            send_push(f"❌ Playwright Timeout/Error: {str(e)}")
         finally:
             browser.close()
 
